@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAT Tutor</title>
+<style>
+  :root { --bg:#faf8f4; --ink:#1f2328; --muted:#6b7280; --card:#fff; --line:#e5e1d8; --accent:#2f5d50; --care:#7a4b00; --care-bg:#fdf3e1; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16181a; --ink:#e8e6e1; --muted:#9aa0a6; --card:#1f2225; --line:#2d3135; --accent:#7fc4ae; --care:#f2c47a; --care-bg:#2e2615; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.5 system-ui, sans-serif; }
+  main { max-width:680px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:1.4rem; margin:0 0 4px; }
+  p.sub { color:var(--muted); margin:0 0 20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:16px; }
+  label { display:block; font-size:.85rem; color:var(--muted); margin-bottom:4px; }
+  input { width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit; }
+  button { margin-top:10px; padding:10px 16px; border:0; border-radius:8px; background:var(--accent); color:var(--bg); font:inherit; cursor:pointer; }
+  button.quiet { background:transparent; color:var(--muted); border:1px solid var(--line); padding:6px 10px; font-size:.85rem; }
+  button:disabled { opacity:.5; }
+  button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  #log { max-height:55vh; overflow:auto; display:flex; flex-direction:column; gap:10px; }
+  .msg { padding:10px 12px; border-radius:10px; white-space:pre-wrap; max-width:90%; overflow-wrap:anywhere; }
+  .user { align-self:flex-end; background:var(--accent); color:var(--bg); }
+  .assistant { align-self:flex-start; background:var(--bg); border:1px solid var(--line); }
+  .care { align-self:flex-start; background:var(--care-bg); color:var(--ink); border:1px solid var(--care); }
+  .error { color:var(--care); font-size:.9rem; }
+  .row { display:flex; gap:8px; } .row input { flex:1; } .row button { margin-top:0; }
+  .bar { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; color:var(--muted); font-size:.85rem; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; margin-top:10px; }
+  select { width:100%; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit; }
+  details { margin-top:12px; } summary { cursor:pointer; color:var(--muted); font-size:.9rem; }
+  footer { color:var(--muted); font-size:.8rem; margin-top:8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>SAT Tutor</h1>
+  <p class="sub">A chat tutor that adapts to a short student profile (goal, level, confidence, anxiety, feedback style) and remembers the conversation. Demo profiles only: please use a made-up name.</p>
+
+  <section class="card" id="setup">
+    <label for="name">Student name</label>
+    <input id="name" value="Demo student" maxlength="80">
+    <div class="grid">
+      <div><label for="target">Target score</label><input id="target" type="number" min="400" max="1600" step="10" value="1400"></div>
+      <div><label for="current">Current score</label><input id="current" type="number" min="400" max="1600" step="10" value="1200"></div>
+      <div><label for="testdate">Test date</label><input id="testdate" type="date"></div>
+      <div><label for="lvl-rw">Reading and Writing level</label>
+        <select id="lvl-rw"><option value="">skip</option><option>beginner</option><option>developing</option><option>solid</option><option>advanced</option></select></div>
+      <div><label for="lvl-math">Math level</label>
+        <select id="lvl-math"><option value="">skip</option><option>beginner</option><option>developing</option><option>solid</option><option>advanced</option></select></div>
+      <div><label for="anxiety">Test anxiety (1 low, 5 high)</label>
+        <select id="anxiety"><option value="">skip</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
+      <div><label for="confidence">Confidence (1 low, 5 high)</label>
+        <select id="confidence"><option value="">skip</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
+      <div><label for="feedback">How you like feedback</label>
+        <select id="feedback"><option value="">skip</option><option value="hint_first">hint first</option><option value="worked_example">worked example</option><option value="numbered_steps">short numbered steps</option></select></div>
+    </div>
+    <details>
+      <summary>More about you (optional)</summary>
+      <div class="grid">
+        <div><label for="motivation">Why you are preparing</label>
+          <select id="motivation"><option value="">skip</option><option value="own_goal">my own goal</option><option value="parents">my parents</option><option value="admissions">an application needs it</option><option value="unsure">not sure yet</option></select></div>
+        <div><label for="hours">Study hours per week</label><input id="hours" type="number" min="0" max="40"></div>
+        <div><label for="planning">Planning</label>
+          <select id="planning"><option value="">skip</option><option value="plans_ahead">I plan ahead</option><option value="last_minute">I work last minute</option></select></div>
+        <div><label for="lang">Reply language</label>
+          <select id="lang"><option value="">English</option><option value="ru">Russian</option><option value="kk">Kazakh</option><option value="tr">Turkish</option><option value="it">Italian</option></select></div>
+        <div><label for="english">English level</label>
+          <select id="english"><option value="">skip</option><option value="basic">basic</option><option value="intermediate">intermediate</option><option value="fluent">fluent</option></select></div>
+      </div>
+      <label for="errors" style="margin-top:10px">Mistakes you keep making (up to 3, comma separated)</label>
+      <input id="errors" placeholder="comma splices, dropping negative signs">
+      <label for="tags" style="margin-top:10px">Interests for examples (up to 2, comma separated)</label>
+      <input id="tags" placeholder="basketball, chess">
+    </details>
+    <button id="start">Start session</button>
+    <p class="error" id="setup-error" hidden></p>
+  </section>
+
+  <section class="card" id="chat" hidden>
+    <div class="bar"><span id="who"></span><button class="quiet" id="forget">Delete my data</button></div>
+    <div id="log" aria-live="polite"></div>
+    <div class="row" style="margin-top:12px">
+      <input id="msg" placeholder="Ask about any SAT question" aria-label="Message" maxlength="2000">
+      <button id="send">Send</button>
+    </div>
+  </section>
+  <footer>Conversations are kept only for this demo session and can be deleted at any time. Messages that suggest someone may be in crisis are never sent to the model or stored.</footer>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let session = null;
+try { session = JSON.parse(sessionStorage.getItem("tutor-session") || "null"); } catch (e) {}
+
+const add = (cls, text) => {
+  const d = document.createElement("div");
+  d.className = "msg " + cls; d.textContent = text;
+  $("log").appendChild(d); $("log").scrollTop = $("log").scrollHeight;
+  return d;
+};
+const auth = () => ({ "Content-Type": "application/json", "Authorization": "Bearer " + session.token });
+const detail = async (r) => { try { const j = await r.json(); return typeof j.detail === "string" ? j.detail : "Please check your input."; } catch (e) { return "Something went wrong."; } };
+
+function openChat(greet) {
+  $("setup").hidden = true; $("chat").hidden = false;
+  $("who").textContent = "Session for " + session.name;
+  if (greet) add("assistant", "Hi " + session.name + ". Paste a question or ask about a topic.");
+  $("msg").focus();
+}
+
+async function restore() {
+  if (!session) return;
+  const r = await fetch(`/students/${session.id}/history`, { headers: auth() });
+  if (!r.ok) { session = null; sessionStorage.removeItem("tutor-session"); return; }
+  openChat(false);
+  const { messages } = await r.json();
+  if (!messages.length) add("assistant", "Hi " + session.name + ". Paste a question or ask about a topic.");
+  messages.forEach((m) => add(m.role, m.content));
+}
+
+$("start").onclick = async () => {
+  $("setup-error").hidden = true;
+  const list = (id, n) => $(id).value.split(",").map((t) => t.trim()).filter(Boolean).slice(0, n);
+  const num = (id) => ($(id).value === "" ? undefined : Number($(id).value));
+  const pick = (id) => $(id).value || undefined;
+  const profile = {
+    target_score: num("target"), current_score: num("current"), test_date: pick("testdate"),
+    level_reading_writing: pick("lvl-rw"), level_math: pick("lvl-math"),
+    test_anxiety: num("anxiety"), confidence: num("confidence"), feedback_style: pick("feedback"),
+    motivation: pick("motivation"), study_hours_per_week: num("hours"), planning: pick("planning"),
+    reply_language: pick("lang"), english_level: pick("english"), recurring_errors: list("errors", 3),
+  };
+  const r = await fetch("/students", { method: "POST", headers: { "Content-Type": "application/json" },
+                                       body: JSON.stringify({ name: $("name").value, tags: list("tags", 2), profile }) });
+  if (!r.ok) { $("setup-error").textContent = await detail(r); $("setup-error").hidden = false; return; }
+  session = await r.json();
+  try { sessionStorage.setItem("tutor-session", JSON.stringify(session)); } catch (e) {}
+  openChat(true);
+};
+
+async function send() {
+  const text = $("msg").value.trim(); if (!text) return;
+  $("msg").value = ""; add("user", text); $("send").disabled = true;
+  try {
+    const r = await fetch(`/students/${session.id}/chat/stream`, { method: "POST", headers: auth(), body: JSON.stringify({ message: text }) });
+    if (!r.ok) { add("care", await detail(r)); return; }
+    if ((r.headers.get("content-type") || "").includes("application/json")) {
+      const j = await r.json(); add(j.safety ? "care" : "assistant", j.reply); return;
+    }
+    const bubble = add("assistant", "");
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, i); buf = buf.slice(i + 2);
+        const ev = (block.match(/^event: (.*)$/m) || [])[1], data = (block.match(/^data: (.*)$/m) || [])[1];
+        if (ev === "delta") { bubble.textContent += JSON.parse(data); $("log").scrollTop = $("log").scrollHeight; }
+        if (ev === "error") { bubble.className = "msg care"; bubble.textContent = JSON.parse(data); }
+      }
+    }
+  } catch (e) { add("care", "Connection lost. Please try again."); }
+  finally { $("send").disabled = false; $("msg").focus(); }
+}
+$("send").onclick = send;
+$("msg").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+
+$("forget").onclick = async () => {
+  if ($("forget").dataset.armed !== "1") { $("forget").dataset.armed = "1"; $("forget").textContent = "Click again to delete"; return; }
+  await fetch(`/students/${session.id}`, { method: "DELETE", headers: auth() });
+  sessionStorage.removeItem("tutor-session"); session = null;
+  $("log").innerHTML = ""; $("forget").dataset.armed = ""; $("forget").textContent = "Delete my data";
+  $("chat").hidden = true; $("setup").hidden = false;
+};
+restore();
+</script>
+</body>
+</html>

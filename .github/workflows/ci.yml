@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check app tests eval
+      - run: ruff format --check app tests eval
+      - run: pytest -q
+      - name: safety screen regression check
+        run: python eval/safety_eval.py
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t sat-tutor .
+      - name: container serves /health as a non-root user
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' sat-tutor)" = "app"
+          docker run -d -p 18000:8000 --name tutor sat-tutor
+          for i in $(seq 1 30); do curl -fs localhost:18000/health && break; sleep 1; done
+          curl -fs localhost:18000/health | grep '"status":"ok"'
+      - name: container logs on failure
+        if: failure()
+        run: docker logs tutor 2>&1 | tail -25 | sed 's/^/::warning::/' || true

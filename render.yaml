@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: sat-tutor
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_PATH
+        value: /tmp/tutor.db
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
+      - key: DAILY_BUDGET_USD
+        value: "2.0"
+      - key: OPENAI_API_KEY
+        sync: false   # set in the Render dashboard; the app runs in demo mode while unset
+      - key: ADMIN_TOKEN
+        sync: false

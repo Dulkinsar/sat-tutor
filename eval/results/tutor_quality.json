@@ -1,0 +1,22 @@
+{
+  "with_profile": {
+    "correct": 0.933,
+    "personalized": 1.7,
+    "teaching": 1.867,
+    "within_180_words": 1,
+    "usd_per_reply": 0.000141,
+    "format_checks_passed": "8 of 8"
+  },
+  "no_profile": {
+    "correct": 0.933,
+    "personalized": 0.633,
+    "teaching": 1.767,
+    "within_180_words": 1,
+    "usd_per_reply": 0.000107,
+    "format_checks_passed": "2 of 8"
+  },
+  "models": {
+    "tutor": "gpt-6-luna",
+    "judge": "claude-sonnet-5-5"
+  }
+}
