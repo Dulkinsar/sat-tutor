@@ -52,8 +52,11 @@ class BodyLimit:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         length = dict(scope["headers"]).get(b"content-length")
-        if length is not None and int(length) > MAX_BODY_BYTES:
-            return await _too_large(send)
+        if length is not None:
+            if not length.isdigit():
+                return await _reject(send, 400, "Invalid Content-Length header.")
+            if int(length) > MAX_BODY_BYTES:
+                return await _too_large(send)
         seen = 0
 
         async def limited():
@@ -74,10 +77,14 @@ class _BodyTooLarge(Exception):
     pass
 
 
-async def _too_large(send) -> None:
-    body = json.dumps({"detail": "Request body is too large."}).encode()
-    await send({"type": "http.response.start", "status": 413, "headers": [(b"content-type", b"application/json")]})
+async def _reject(send, status: int, detail: str) -> None:
+    body = json.dumps({"detail": detail}).encode()
+    await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", b"application/json")]})
     await send({"type": "http.response.body", "body": body})
+
+
+async def _too_large(send) -> None:
+    await _reject(send, 413, "Request body is too large.")
 
 
 app.add_middleware(BodyLimit)
@@ -256,9 +263,9 @@ def _preflight(body: ChatIn, student: dict, request: Request) -> JSONResponse | 
     messages = tutor.build_messages(student["name"], student["tags"], past, body.message, student["profile"])
 
     limit = float(os.getenv("DAILY_BUDGET_USD", "2.0"))
-    spent = db.spend_on(db.today())
     reserve = tutor.worst_case_usd(messages)
-    if not budget.reserve(spent, limit, reserve):
+    ok, spent = budget.reserve(lambda: db.spend_on(db.today()), limit, reserve)
+    if not ok:
         log.error("daily budget of $%.2f reached ($%.4f spent); chat paused", limit, spent)
         raise HTTPException(503, "The demo has used today's budget. Please come back tomorrow.")
     if spent >= 0.8 * limit:
@@ -270,6 +277,14 @@ def _log_usage(usage: tutor.Usage) -> None:
     db.log_usage(tutor.model(), usage.tokens_in, usage.tokens_out, usage.usd)
 
 
+def _billed(done: dict, messages: list[dict]) -> tutor.Usage:
+    """Usage reported by the provider, or an estimate when the client left mid-stream."""
+    if "usage" in done:
+        return done["usage"]
+    prompt = sum(tutor.estimate_tokens(m["content"]) for m in messages)
+    return tutor.Usage(prompt, tutor.estimate_tokens("".join(done.get("parts", []))))
+
+
 @app.post("/students/{student_id}/chat")
 def chat(body: ChatIn, student: Student, request: Request):
     prepared = _preflight(body, student, request)
@@ -278,13 +293,12 @@ def chat(body: ChatIn, student: Student, request: Request):
     messages, reserved = prepared
     try:
         text, usage = tutor.reply(messages)
-        db.add_turn(student["pk"], body.message, text)
-        _log_usage(usage)  # spend is logged before the reservation is released, so no gap
     except tutor.TutorUnavailable as exc:
+        budget.settle(reserved)
         log.error("model call failed: %s", exc)
         raise HTTPException(503, "The tutor is unavailable right now. Please try again in a minute.") from exc
-    finally:
-        budget.release(reserved)
+    budget.settle(reserved, lambda: _log_usage(usage))
+    db.add_turn(student["pk"], body.message, text)
     return {"reply": text, "safety": False}
 
 
@@ -302,18 +316,13 @@ def chat_stream(body: ChatIn, student: Student, request: Request):
             for delta in tutor.stream(messages, done):
                 yield f"event: delta\ndata: {json.dumps(delta)}\n\n"
             db.add_turn(student["pk"], body.message, done["text"])
-            _log_usage(done["usage"])
             yield "event: done\ndata: {}\n\n"
         except tutor.TutorUnavailable as exc:
             log.error("model stream failed: %s", exc)
             yield f"event: error\ndata: {json.dumps('The tutor is unavailable right now.')}\n\n"
         finally:
-            if "usage" not in done and done.get("parts"):
-                # The client left mid-stream. The provider still bills what was generated, so log an estimate.
-                partial = "".join(done["parts"])
-                prompt = sum(tutor.estimate_tokens(m["content"]) for m in messages)
-                _log_usage(tutor.Usage(prompt, tutor.estimate_tokens(partial)))
-            budget.release(reserved)
+            billed = "usage" in done or bool(done.get("parts"))  # nothing generated means nothing billed
+            budget.settle(reserved, (lambda: _log_usage(_billed(done, messages))) if billed else None)
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 

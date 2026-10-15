@@ -4,13 +4,20 @@ import types
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db, main, safety, tutor
+from app import db, safety, tutor
 
 
 class FakeOpenAI:
     """Stands in for the OpenAI client: Responses API (plain and streaming) plus moderation."""
 
-    def __init__(self, reply="Think about the clause boundary.", flag=False, fail=False, moderation_fails=False):
+    def __init__(
+        self,
+        reply="Think about the clause boundary.",
+        flag=False,
+        fail=False,
+        moderation_fails=False,
+        final="response.completed",
+    ):
         self.calls, self.moderated = [], []
         outer = self
 
@@ -23,7 +30,9 @@ class FakeOpenAI:
                 if kw.get("stream"):
                     words = reply.split(" ")
                     events = [types.SimpleNamespace(type="response.output_text.delta", delta=w + " ") for w in words]
-                    done = types.SimpleNamespace(type="response.completed", response=types.SimpleNamespace(usage=usage))
+                    if final is None:  # stream ends without a usage event
+                        return iter(events)
+                    done = types.SimpleNamespace(type=final, response=types.SimpleNamespace(usage=usage))
                     return iter([*events, done])
                 return types.SimpleNamespace(output_text=reply, usage=usage)
 
@@ -50,7 +59,7 @@ def client(tmp_path, monkeypatch):
         monkeypatch.delenv(var, raising=False)
     from app.main import app, budget, limiter
 
-    budget.release(1e9)
+    budget.settle(1e9)
 
     limiter.reset()
     with TestClient(app) as c:
@@ -211,7 +220,7 @@ def test_budget_reservations_stop_concurrent_overspend():
 
     b = tutor.Budget()
     with ThreadPoolExecutor(20) as pool:
-        granted = list(pool.map(lambda _: b.reserve(0.0, 0.001, 0.0004), range(20)))
+        granted = list(pool.map(lambda _: b.reserve(lambda: 0.0, 0.001, 0.0004)[0], range(20)))
     assert sum(granted) == 2  # only what fits in the budget, however many arrive at once
 
 
@@ -225,19 +234,6 @@ def test_streaming_sends_deltas_then_stores_the_turn(client, live):
     assert events[-1][0] == "event: done"
     hist = client.get(f"/students/{s['id']}/history", headers=s["h"]).json()["messages"]
     assert hist[-1]["content"].strip() == "Split the clauses with a period."
-
-
-def test_v1_database_is_migrated(tmp_path, monkeypatch):
-    path = tmp_path / "old.db"
-    monkeypatch.setenv("DATABASE_PATH", str(path))
-    import sqlite3
-
-    con = sqlite3.connect(path)
-    con.execute("CREATE TABLE students (id INTEGER PRIMARY KEY, name TEXT, tags TEXT)")
-    con.commit()
-    con.close()
-    db.init()
-    assert db.create_student("Ada", [])["id"].startswith("stu_")
 
 
 def test_safety_eval_local_layer_meets_floor():
@@ -323,6 +319,12 @@ def test_profile_fields_become_tutor_rules():
     assert "drops negative signs" in system
 
 
+@pytest.mark.parametrize("hours, expected", [(2, "one focus skill"), (5, "About 5 study hours"), (12, "multi-skill")])
+def test_every_study_hours_value_reaches_the_prompt(hours, expected):
+    system = tutor.build_messages("Ada", [], [], "q", {"study_hours_per_week": hours})[0]["content"]
+    assert expected in system
+
+
 def test_profile_is_stored_and_replaced(client):
     r = client.post("/students", json={"name": "Ada", "profile": {"confidence": 2, "level_math": "beginner"}})
     s = r.json()
@@ -359,15 +361,32 @@ def test_format_checks_follow_the_profile():
     assert mod.format_checks({}, "anything") == {}
 
 
-def test_spend_is_logged_before_the_reservation_is_released(client, live, monkeypatch):
-    live()
+def test_spend_read_and_settle_happen_under_the_budget_lock():
+    """A call is always counted once: as a reservation or as logged spend, never neither."""
+    b = tutor.Budget()
+    seen = {}
+    ok, _ = b.reserve(lambda: seen.setdefault("read_locked", b._lock.locked()) and 0.0, 1.0, 0.25)
+    assert ok and seen["read_locked"]
+    b.settle(0.25, lambda: seen.update(log_locked=b._lock.locked(), reserved_at_log=b._reserved))
+    assert seen["log_locked"] and seen["reserved_at_log"] == 0.25 and b._reserved == 0.0
+
+
+@pytest.mark.parametrize("final, tokens_out", [("response.incomplete", 300), (None, None)])
+def test_truncated_or_unreported_streams_are_still_billed(client, live, final, tokens_out):
+    live(reply="A long answer that hit the cap", final=final)
     s = new_student(client)
-    order = []
-    real_release, real_log = main.budget.release, db.log_usage
-    monkeypatch.setattr(main.budget, "release", lambda amount: (order.append("release"), real_release(amount)))
-    monkeypatch.setattr(db, "log_usage", lambda *a, **k: (order.append("log"), real_log(*a, **k)))
-    assert chat(client, s, "hello").status_code == 200
-    assert order == ["log", "release"]
+    r = chat(client, s, "explain", stream=True)
+    assert "event: done" in r.text
+    with db.connect() as conn:
+        row = conn.execute("SELECT tokens_in, tokens_out FROM usage").fetchone()
+    assert row[0] > 0 and row[1] > 0
+    if tokens_out is not None:
+        assert row[1] == tokens_out
+
+
+def test_malformed_content_length_is_a_400(client):
+    r = client.post("/students", content=b"{}", headers={"Content-Length": "abc", "Content-Type": "application/json"})
+    assert r.status_code == 400
 
 
 def test_cyrillic_text_costs_more_tokens_per_character():

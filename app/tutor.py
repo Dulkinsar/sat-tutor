@@ -8,7 +8,7 @@ import os
 import threading
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Iterator
+from typing import Callable, Iterator
 
 from .profile import Profile, instructions, language_line
 
@@ -25,6 +25,7 @@ TAG_RULES = (
 MAX_HISTORY_MESSAGES = 40
 MAX_OUTPUT_TOKENS = 1500
 PRICES = {"gpt-6-luna": (0.10, 0.50)}  # USD per million tokens (input, output)
+FINAL_EVENTS = ("response.completed", "response.incomplete")
 
 
 def model() -> str:
@@ -111,24 +112,33 @@ def worst_case_usd(messages: list[dict]) -> float:
 class Budget:
     """Reserve worst-case cost before a call so concurrent requests cannot overshoot the daily budget.
 
-    Reservations live in process memory, like the rate limiter; spend already
-    logged comes from the database.
+    Reading today's spend and reserving happen under one lock, and so do logging
+    the real cost and releasing the reservation. Every call is therefore counted
+    either as logged spend or as a reservation, never as both or neither.
+    Reservations live in process memory, so this holds for a single worker.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._reserved = 0.0
 
-    def reserve(self, spent_today: float, limit: float, amount: float) -> bool:
+    def reserve(self, spent_today: Callable[[], float], limit: float, amount: float) -> tuple[bool, float]:
+        """Return (reserved?, spend read under the lock)."""
         with self._lock:
-            if spent_today + self._reserved + amount > limit:
-                return False
+            spent = spent_today()
+            if spent + self._reserved + amount > limit:
+                return False, spent
             self._reserved += amount
-            return True
+            return True, spent
 
-    def release(self, amount: float) -> None:
+    def settle(self, amount: float, log: Callable[[], None] | None = None) -> None:
+        """Log the real cost (if any) and release the reservation as one step."""
         with self._lock:
-            self._reserved = max(0.0, self._reserved - amount)
+            try:
+                if log is not None:
+                    log()
+            finally:
+                self._reserved = max(0.0, self._reserved - amount)
 
 
 class TutorUnavailable(RuntimeError):
@@ -182,7 +192,7 @@ def stream(messages: list[dict], done: dict) -> Iterator[str]:
             yield word + " "
         done.update(text=text, usage=usage)
         return
-    usage = Usage(0, 0)
+    usage: Usage | None = None
     try:
         events = client().responses.create(
             model=model(), input=messages, max_output_tokens=MAX_OUTPUT_TOKENS, stream=True
@@ -191,8 +201,12 @@ def stream(messages: list[dict], done: dict) -> Iterator[str]:
             if event.type == "response.output_text.delta":
                 parts.append(event.delta)
                 yield event.delta
-            elif event.type == "response.completed" and getattr(event.response, "usage", None):
+            elif event.type in FINAL_EVENTS and getattr(event.response, "usage", None):
+                # "incomplete" fires when the reply hits max_output_tokens; it is billed like "completed".
                 usage = Usage(event.response.usage.input_tokens, event.response.usage.output_tokens)
     except Exception as exc:
         raise TutorUnavailable(str(exc)) from exc
-    done.update(text="".join(parts), usage=usage)
+    text = "".join(parts)
+    if usage is None:  # no usage reported: bill an estimate rather than zero
+        usage = Usage(sum(estimate_tokens(m["content"]) for m in messages), estimate_tokens(text))
+    done.update(text=text, usage=usage)

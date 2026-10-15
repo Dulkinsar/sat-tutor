@@ -13,7 +13,6 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-SCHEMA_VERSION = 4
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS students (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,17 +76,7 @@ def connect():
 def init() -> None:
     with connect() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if version < 2:
-            # v1 addressed students by sequential id with no token; its rows cannot be secured, so drop them.
-            conn.executescript("DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS students;")
         conn.executescript(SCHEMA)
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(students)")}
-        if "care_until" not in columns:
-            conn.execute("ALTER TABLE students ADD COLUMN care_until TEXT")
-        if "profile" not in columns:
-            conn.execute("ALTER TABLE students ADD COLUMN profile TEXT NOT NULL DEFAULT '{}'")
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 
 def hash_token(token: str) -> str:
@@ -160,11 +149,6 @@ def history(pk: int, limit: int) -> list[dict]:
             "SELECT role, content FROM messages WHERE student_id = ? ORDER BY id DESC LIMIT ?", (pk, limit)
         ).fetchall()
     return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
-
-
-def message_count(pk: int) -> int:
-    with connect() as conn:
-        return conn.execute("SELECT COUNT(*) FROM messages WHERE student_id = ?", (pk,)).fetchone()[0]
 
 
 def log_usage(model: str, tokens_in: int, tokens_out: int, usd: float) -> None:

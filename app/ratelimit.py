@@ -79,9 +79,6 @@ class RateLimiter:
     def __len__(self) -> int:
         return len(self._windows)
 
-    def __contains__(self, key: str) -> bool:
-        return key in self._windows
-
     # The policies used by the API
     def allow_chat(self, visitor: str) -> tuple[bool, str]:
         if not self.hit(f"chat:{visitor}", int(os.getenv("CHAT_LIMIT_PER_HOUR", "30")), HOUR):

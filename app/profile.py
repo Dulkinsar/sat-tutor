@@ -109,6 +109,11 @@ def instructions(p: Profile, today: date | None = None) -> list[str]:
     if p.study_hours_per_week is not None:
         if p.study_hours_per_week <= 3:
             lines.append("Little study time: suggest one focus skill per session.")
+        elif p.study_hours_per_week < 10:
+            lines.append(
+                f"About {p.study_hours_per_week} study hours a week: keep any plan within that time, "
+                "with one or two focus skills."
+            )
         elif p.study_hours_per_week >= 10:
             lines.append("Plenty of study time: multi-skill plans are fine.")
     if p.planning == "last_minute":
